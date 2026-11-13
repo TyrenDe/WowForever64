@@ -1,0 +1,17 @@
+**/bin/
+**/obj/
+.vs/
+.vscode/
+.idea/
+TestResults/
+*.local.json
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
+*.log
+*.user
+.DS_Store
+Thumbs.db

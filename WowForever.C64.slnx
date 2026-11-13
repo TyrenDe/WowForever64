@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/WowForever.C64.Console/WowForever.C64.Console.csproj" />
+    <Project Path="src/WowForever.C64.Core/WowForever.C64.Core.csproj" />
+  </Folder>
+</Solution>

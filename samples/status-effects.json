@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "status": "LIVE",
+  "inCombat": false,
+  "live": true,
+  "partial": false,
+  "truncated": false,
+  "auras": [
+    {
+      "name": "Camp Benefits",
+      "spellId": 1229741,
+      "remaining": 7186,
+      "duration": 7200,
+      "description": [
+        "Sharpening Wheel: Strength increased by 6.",
+        "First Aid Kit: Stamina increased by 3."
+      ]
+    },
+    { "name": "Devotion Aura", "spellId": 10290, "permanent": true },
+    { "name": "Find Minerals", "spellId": 2580, "permanent": true },
+    { "name": "Violet Flames", "spellId": 1328375, "permanent": true },
+    { "name": "Welcoming Campfire", "spellId": 1229739, "remaining": 51 },
+    { "name": "Arcane Intellect", "spellId": 1460, "remaining": 583 },
+    { "name": "Campfire Nearby", "spellId": 1283391, "permanent": true }
+  ]
+}
