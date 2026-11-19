@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "WowForever.C64.Console": {
+      "commandName": "Project",
+      "commandLineArgs": "watch"
+    }
+  }
+}
