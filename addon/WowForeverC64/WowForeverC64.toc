@@ -2,11 +2,12 @@
 ## Title: WoW Forever C64
 ## Notes: Read-only status effects and pixel bridge for the C64 display.
 ## Author: WoW Forever C64 project
-## Version: 0.5.0
+## Version: 0.6.1
 ## SavedVariablesPerCharacter: WowForeverC64DB
 
 Api.lua
 Collector.lua
+Context.lua
 Bridge.lua
 View.lua
 Main.lua

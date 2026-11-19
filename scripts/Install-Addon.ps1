@@ -32,7 +32,7 @@ if ((Split-Path $clientPath.TrimEnd('\', '/') -Leaf) -ne '_forever_' -or
 $sourcePath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\addon\WowForeverC64'))
 $destinationPath = Join-Path $clientPath 'Interface\AddOns\WowForeverC64'
 New-Item -ItemType Directory -Path $destinationPath -Force | Out-Null
-foreach ($fileName in @('WowForeverC64.toc', 'Api.lua', 'Collector.lua', 'Bridge.lua', 'View.lua', 'Main.lua')) {
+foreach ($fileName in @('WowForeverC64.toc', 'Api.lua', 'Collector.lua', 'Context.lua', 'Bridge.lua', 'View.lua', 'Main.lua')) {
     Copy-Item -LiteralPath (Join-Path $sourcePath $fileName) -Destination (Join-Path $destinationPath $fileName) -Force
 }
 

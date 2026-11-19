@@ -18,5 +18,6 @@ public enum TileId : byte
     ShieldTopLeft = 113, ShieldTopRight = 114, ShieldBottomLeft = 115, ShieldBottomRight = 116,
     SwordTopLeft = 117, SwordTopRight = 118, SwordBottomLeft = 119, SwordBottomRight = 120,
     SkullTopLeft = 121, SkullTopRight = 122, SkullBottomLeft = 123, SkullBottomRight = 124,
-    Heart = 125, ArrowLeft = 126, Pound = 127
+    Heart = 125, ArrowLeft = 126, Pound = 127,
+    DownArrow = 222
 }

@@ -7,7 +7,7 @@ The dashboard uploads an original 2 KB font/tile set into C64 RAM and selects it
 The PNG preview uses the **same 2,048 glyph bytes, 1,000 screen codes, and 1,000 color values** as the hardware upload. It draws bits directly, with nearest-neighbor integer scaling, rather than substituting a PC font. It includes a modest C64 border and a fixed C64 palette; the Ultimate's configured palette and display aspect ratio can look slightly different.
 
 - [Dashboard](../artifacts/fantasy-dashboard.png): the earlier user-provided seven-effect example.
-- [Combat](../artifacts/fantasy-combat.png): the same snapshot with frozen timers and an inactive bar.
+- The earlier combat preview shows a frozen timer. The current renderer uses a red sword and amber estimated timers. [Combat preview](../artifacts/fantasy-combat.png)
 - [Affliction art demo](../artifacts/fantasy-affliction-demo.png): an explicitly synthetic affliction and a partially filled bar, for visual review only.
 - [All 256 glyphs](../artifacts/fantasy-atlas.png): labeled by hexadecimal codepoint.
 - [Raw 2 KB charset](../artifacts/fantasy-charset.bin).
@@ -38,7 +38,7 @@ Each glyph is eight bytes, top row first; bit 7 is its leftmost pixel. A set bit
 
 Codes `$20–$5F` are an original uppercase face using **ASCII positions**: space `$20`, punctuation `$21–$2F`, digits `$30–$39`, punctuation `$3A–$40`, and letters `$41–$5A`. Slots `$5B–$5F` contain `[ \ ] ↑ _`; `$5E` doubles as the semantic `UpArrow` tile rather than a plain caret. Lowercase input folds to uppercase. Unsupported characters become `?`. This intentionally replaces the earlier PETSCII/ROM screen-code mapping; existing screen dumps must be composed again with this renderer.
 
-The other 64 lower-half slots contain UI tiles. `$80–$FF` are exact bitwise inverse copies of `$00–$7F`, preserving a convenient reverse-video convention. The VIC-II does not invert them automatically: the generator provides those actual bytes. External charsets should preserve this mapping and inverse convention.
+The other 64 lower-half slots contain UI tiles. The generator provides inverse glyphs at `$80–$FF`, with `$DE` assigned to a down arrow for negative Camp Benefits. The renderer uses a red minus with older external charsets.
 
 | Code | Tile | Code | Tile |
 | --- | --- | --- | --- |
@@ -124,7 +124,7 @@ dotnet run --project src/WowForever.C64.Console -c Release -- send --snapshot sa
 
 This sends a **static sample**, not live gameplay data. Check the custom lettering, ornamental frame, campfire/shield/sword icons, green effect diamonds, and Camp Benefits bar against the preview. Confirm that the CPU stays paused and no cursor appears. A second send can replace the sample without resuming the CPU.
 
-For live use, restart the companion with `watch`. The current addon uses grayscale pixel protocol v3, retaining the duration and expiration fields added in v2, so load it on your next login or `/reload` when convenient. The companion still accepts v1/v2 packets in its capture region, but duration bars stay empty when a total duration is unknown. It never invents a total duration to fill a bar.
+For context notifications, install the current addon, use `/reload`, and restart the companion with `watch`. The companion accepts v1–v4 packets and flags their older version. Duration bars require a known total duration.
 
 ## Verification performed
 

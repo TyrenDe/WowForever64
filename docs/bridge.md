@@ -10,33 +10,34 @@ A recognizable marker pattern precedes the calibration ramp. The decoder rejects
 
 Frames advance every 200 ms. Protocol v3 carries 108 snapshot bytes per frame; typical seven-effect snapshots need several frames, usually about a second for a burst. The sender emits a burst when encoded effects change, then heartbeats; it repeats the latest snapshot three seconds after a completed burst for recovery. It finishes an in-progress burst before adopting the newest queued update. There is no dependency on receiving a delta history, acknowledgments, or an external addon library.
 
-An effect expiration is stored as milliseconds of client uptime modulo 2³². Frames carry the same clock. The C# renderer uses the signed modular difference and short local elapsed time, so it does not confuse Windows wall time with the game's uptime. This supports durations below the signed 32-bit millisecond horizon (about 24.8 days); much longer durations are not supported as live countdowns by this first protocol. A random/time-derived session identifier distinguishes addon reloads. Stale snapshots are never revived solely by a continuing local timer.
+An effect expiration uses client uptime in milliseconds modulo 2³², as does the frame clock. The companion converts the signed modular difference to a deadline on its monotonic clock. This supports durations below about 24.8 days. A random/time-derived session identifier distinguishes addon reloads and login resets.
 
-## Frame layout, versions 1, 2, and 3
+## Frame layout, versions 1–5
 
-All integers are unsigned little-endian. Cells 0–6 are fixed RGB markers; cell 7 is green for grayscale v3 or magenta for legacy red/green v1/v2. Cells 8–23 are the grayscale ramp; 24–31 are reserved black. In v3, cells 32–319 contain up to 144 bytes, two grayscale nibble cells per byte: a 36-byte header and a chunk of up to **108 bytes**. Legacy v1/v2 use one red/green cell per byte for up to 288 bytes, including **252 chunk bytes**. The companion retains both decoders; legacy patches must be within its capture region.
+All integers are unsigned little-endian. Cells 0–6 are fixed RGB markers. Cell 7 is green for grayscale v3–v5 and magenta for legacy red/green v1/v2. Cells 8–23 are the calibration ramp and 24–31 are reserved black. In v3–v5, cells 32–319 carry a 36-byte header and up to **108** payload bytes at two grayscale nibble cells per byte. Legacy v1/v2 use one red/green cell per byte and carry up to **252** chunk bytes.
 
 | Byte offset | Size | Field |
 | --- | --- | --- |
 | 0 | 4 | ASCII `C64W` magic. |
-| 4 | 1 | Protocol version: current addon sends `3`; the companion also accepts `1` and `2`. |
-| 5 | 1 | Flags: combat `1`, live expirations `2`, partial scan `4`, truncated payload `8`, world ready `16`. |
+| 4 | 1 | Protocol version. The current addon sends `5` with the v4 packet layout. |
+| 5 | 1 | Flags for combat `1`, current aura snapshot `2`, partial scan `4`, truncated payload `8`, world ready `16`, and aura data available `32` (v4+). |
 | 6 | 2 | Frame sequence, incremented for each heartbeat/chunk. |
 | 8 | 4 | Session identifier. |
 | 12 | 2 | Snapshot identifier. |
-| 14 | 2 | Chunk index, or `65535` for a heartbeat with no chunk. |
+| 14 | 2 | Chunk index, or `65535` for a heartbeat or context packet. |
 | 16 | 2 | Total chunk count for the latest snapshot. |
 | 18 | 2 | Complete snapshot byte length, 1–8192. |
 | 20 | 2 | This frame's chunk length, 0–108 in v3; 0–252 in v1/v2. |
 | 22 | 4 | Adler-32 of the complete snapshot. |
 | 26 | 4 | Adler-32 of header bytes 0–25, then 30–35, then this chunk. |
 | 30 | 4 | Current client uptime in milliseconds modulo 2³². |
-| 34 | 2 | Reserved zero. |
+| 34 | 1 | Packet kind in v4 and later. `0` is an aura chunk or heartbeat. `1` is a stand-alone context packet. Zero in earlier versions. |
+| 35 | 1 | Reserved zero. |
 | 36 | variable | Chunk bytes. |
 
 A chunk's offset is `index × 108` for v3, or `index × 252` for v1/v2. The final chunk can be shorter. Unused cells retain old values and are ignored using the checksum-validated length. Adler-32 detects transmission damage; it is not a cryptographic authentication mechanism.
 
-Reassembly is keyed by session, snapshot ID, snapshot checksum, length, and protocol version. All chunks and the complete checksum must be valid before replacing the status model. Combat flags apply immediately even if a replacement snapshot is still incomplete. A missing/frozen frame sequence invalidates live timers after the configured stale timeout.
+Reassembly is keyed by session, snapshot ID, snapshot checksum, length, and protocol version. All chunks and the complete checksum must be valid before applying a current snapshot. Partial and truncated lists update readable fields while preserving unmatched auras. Complete lists confirm removals, including an empty list. Combat and signal status apply immediately even if a replacement snapshot is still incomplete.
 
 ## Snapshot payload
 
@@ -45,6 +46,7 @@ The first byte is an effect count, maximum 64. Each effect follows this layout:
 | Size | Field |
 | --- | --- |
 | 4 | Spell ID, zero if unavailable. |
+| 4 in v4+ | Aura instance ID, zero if unavailable. |
 | 1 | Flags: harmful `1`, permanent `2`, known expiration `4`, known stacks `8`, known duration `16` (v2/v3). |
 | 1 | UTF-8 name byte length, maximum 160. |
 | 4 | Expiration uptime milliseconds modulo 2³²; meaningful only when known. |
@@ -57,6 +59,12 @@ The first byte is an effect count, maximum 64. Each effect follows this layout:
 Camp Benefits is prioritized, followed by harmful effects, then other buffs. Only Camp Benefits carries description lines. Description text is capped at 2,048 bytes per effect. Strings are truncated at UTF-8 boundaries. Entire effect records are omitted if the 8,192-byte snapshot limit is reached; the truncated flag is set. The UI identifies partial/truncated results. Numeric unknowns remain unknown and never become fabricated live timers.
 
 The companion also accepts a separate human-readable JSON snapshot via `preview --snapshot` and `send --snapshot` for offline layout work. That JSON is not the pixel wire format. `IPixelSource`, the protocol/reassembly layer, the status model, rendering, and `IUltimateClient` remain independent.
+
+## Context payload (v4 and later)
+
+Context packets carry the active aura snapshot header and a context payload covered by the frame checksum. The first byte holds death status in bits 0–1 (`0` unknown, `1` alive, `2` dead or ghost) and presence flags for level-up `4`, quest turn-in `8`, and zone change `16`. Present entries follow in that order. Each starts with a four-byte event clock, followed by a two-byte level or a one-byte UTF-8 length and title (up to 54 bytes for a quest or 36 for a zone). The latest entry of each kind repeats for up to 30 seconds. The companion uses the event clock to deduplicate and limit notice lifetimes.
+
+The largest context packet is 107 payload bytes. The addon takes at most one of every two frames for context during aura bursts and repeats context about once per second when it stays unchanged. The companion admits events up to five seconds old during continuous capture and drops prior events when reconnecting. A timed notice starts its display duration after the C64 acknowledges the write. Capture runs separately from C64 writes. `watch --diagnostics true` reports frame rates, gaps, and payload counts.
 
 ## C64 theme and transport
 
@@ -77,5 +85,6 @@ Reviewed November 12, 2026:
 - [Microsoft's GDI capture example](https://learn.microsoft.com/en-us/windows/win32/gdi/capturing-an-image) and [CreateDIBSection documentation](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-createdibsection) support desktop bitmap capture and its resource lifecycle. The app uses thread DPI awareness, desktop `BitBlt`, a top-down 32-bit DIB, and `GdiFlush`; GDI resources are released on every capture.
 - [Ultimate REST documentation](https://1541u-documentation.readthedocs.io/en/latest/api/api_calls.html) and [firmware routes](https://github.com/GideonZ/1541ultimate/blob/master/software/api/route_machine.cc) document pause and DMA writes. The [Commodore Programmer's Reference Guide](https://csclub.uwaterloo.ca/~pbarfuss/C64_Programmers_Reference_Guide.pdf), especially Appendix B, defines screen codes and the standard memory layout.
 - Aura API candidates were checked against Blizzard's [Forever UI source export](https://github.com/reckhou/WoWBlzCode/tree/main/Forever/BlizzardInterfaceCode/Interface/AddOns/Blizzard_APIDocumentationGenerated), the installed AutoBiographer `5.1.3`, [ForeverXPBar](https://github.com/yurristudio/ForeverXP), and [Iyo4Ever's camp tracker](https://www.curseforge.com/wow/addons/iyo4ever/files/9481037). An actual-client report subsequently verified the helpful-aura path and two Camp Benefits descriptions. Live v3 capture was later verified on one HDR setup, as described above. Harmful-aura acquisition and combat handling remain unverified in-game.
+- Forever's UI source documents the quest title and turn-in APIs, level-up payload, death status, login flags, and zone text used by the context collector. [Quest](https://raw.githubusercontent.com/reckhou/WoWBlzCode/main/Forever/BlizzardInterfaceCode/Interface/AddOns/Blizzard_APIDocumentationGenerated/QuestLogDocumentation.lua) · [Player and unit](https://raw.githubusercontent.com/reckhou/WoWBlzCode/main/Forever/BlizzardInterfaceCode/Interface/AddOns/Blizzard_APIDocumentationGenerated/UnitDocumentation.lua) · [World entry](https://raw.githubusercontent.com/reckhou/WoWBlzCode/main/Forever/BlizzardInterfaceCode/Interface/AddOns/Blizzard_APIDocumentationGenerated/SystemDocumentation.lua) · [Zone text](https://raw.githubusercontent.com/reckhou/WoWBlzCode/main/Forever/BlizzardInterfaceCode/Interface/AddOns/Blizzard_Minimap/Mainline/Minimap.lua)
 
 SavedVariables persist too infrequently for a live dashboard. Game logs do not supply this structured buff/tooltip model, addon messages remain inside the game, and manual copying is only suitable for diagnostics. Those mechanisms are not used as live transport.

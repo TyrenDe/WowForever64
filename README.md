@@ -1,6 +1,6 @@
 # WoW Forever — C64 Status Effects
 
-A Lua addon and .NET 10 console companion that display WoW Forever buffs, debuffs, and Camp Benefits on a physical Commodore 64 Ultimate. A custom 2 KB RAM charset provides readable fantasy lettering, ornamental frames, campfire/shield/sword/skull icons, and progress bars in standard 40×25 character mode. The CPU stays paused; no bitmap mode, resident C64 program, or raster effects are used. Character name, level, XP, and location are not collected or transmitted.
+A Lua addon and .NET 10 console companion that display WoW Forever buffs, debuffs, Camp Benefits, and gameplay notifications on a physical Commodore 64 Ultimate. A custom 2 KB RAM charset provides readable fantasy lettering, ornamental frames, campfire/shield/sword/skull icons, and progress bars in standard 40×25 character mode. The CPU stays paused; no bitmap mode, resident C64 program, or raster effects are used. The visible pixel stream includes level-up numbers, quest titles, zone names on entry, and death status. Character identity, XP, and coordinates are outside the stream.
 
 ![Custom character-mode preview](artifacts/fantasy-dashboard.png)
 
@@ -70,7 +70,7 @@ The design is independent of a specific PC resolution or aspect ratio. The addon
 | Windows display scaling or game UI scale changes | The addon compensates for UI scale and the capture uses physical coordinates. Fractional resampling or graphics effects can still make cells unreadable. |
 | Multiple monitors | Capture follows the foreground WoW window, including desktop positions outside the primary monitor. Mixed-DPI/HDR monitor moves and windows spanning screens are unverified; keep WoW fully on one screen and reload/restart if capture stops. |
 | HDR | The grayscale bridge was previously verified on one HDR setup (30/30 decoded packets). Other displays, color filters, gamma settings, and brightness clipping may prevent decoding. Try larger cells, disable color filters, or try SDR if needed. |
-| Minimized, covered, off-screen, or background WoW | Requires the visible patch in foreground WoW. Timers freeze when the stream becomes stale. Exclusive fullscreen and remote/streamed desktops are unverified; use windowed/borderless mode. |
+| Minimized, covered, off-screen, or background WoW | Capture requires the visible patch in foreground WoW. Timers continue from the last known durations and turn amber when the signal is lost. Exclusive fullscreen and remote/streamed desktops are unverified; use windowed/borderless mode. |
 | C64 monitor or TV | The dashboard stays at 40×25 characters regardless of PC resolution. Use a screen and video mode that already show the C64's ordinary BASIC display correctly; the monitor/Ultimate handles scaling. This tool does not change the C64 video output resolution. |
 
 The patch needs its full 128×10 pixels (or 192×15 with `/c64 bridge 3`) plus the eight-pixel left/bottom margins. Leave it in its default position and keep overlays clear of it. Check that the terminal reports `Receiving status stream` and the C64 updates after changing resolution, UI scale, or monitors. Compatibility beyond the reported setup remains YMMV; combat handling and harmful-effect acquisition also remain unverified in-game.
@@ -78,9 +78,10 @@ The patch needs its full 128×10 pixels (or 192×15 with `/c64 bridge 3`) plus t
 ## Dashboard behavior
 
 - Camp Benefits has a pinned feature panel, a campfire icon, an hourglass timer, and a duration bar. Its detail lines omit source labels and compact recognized game descriptions to bonuses such as `STRENGTH +6`, with green up-arrow tiles. Unrecognized wording remains readable without inventing values. General effects use green/red diamonds; harmful text and skulls stay red. `ACTIVE` values are green and timed values cyan. Stat names and amounts come from the game.
-- Countdown timers use the game's readable expiration values. Permanent effects show `ACTIVE`. Stacks greater than one appear beside the effect name.
-- Combat entry freezes the collected snapshot and shows `PAUSED - IN COMBAT`; timers show `FROZEN`. Collection resumes after combat. This behavior is implemented but has not yet been validated during actual gameplay.
-- Missing heartbeats or an unreadable/hidden patch freeze the last display after three seconds. Returning to WoW restores the stream. A complete snapshot repeats periodically so late starts and dropped frames recover automatically.
+- Countdown timers use readable game expirations and the companion's monotonic clock. A predicted expiration shows `0:00?` until the game confirms the effect's state. Permanent effects show `ACTIVE`; stacks greater than one appear beside the effect name.
+- Combat shows a red sword and retains the last readable effects. Estimated timers turn amber. Missing heartbeats show `SIGNAL LOST`, while an active stream with temporarily unreadable auras shows `AURA DATA STALE`. Fresh snapshots restore the indicators, and only a complete, authoritative list confirms removals.
+- Level-ups show for eight seconds and take priority over death, then quest turn-ins for five seconds and zone entries for three seconds. Death remains visible until resurrection. Zone notices yield to combat and higher-priority events.
+- `watch` checks the protocol version received from the running addon. `ADDON UPDATE NEEDED` means the stream is from an older addon. Run `scripts/Install-Addon.ps1`, then `/reload` in WoW. `/c64 status` reports the loaded addon and bridge versions. This release expects addon 0.6.1 with bridge v5.
 - Long lists rotate every eight seconds, configured with `watch.pageSeconds`: nine general-aura rows and five Camp Benefits detail rows page independently while the panels and title stay fixed. There is no active-enchantments banner, page counter, connection footer, or effect-count footer. Critical notices replace the decorative header ribbon only when needed. C64 keyboard paging is not implemented.
 - Small changes send only changed ranges of character/color RAM. Charset uploads are cached. A display-state probe every 15 seconds triggers repair only when needed. C64 transport failures are logged and retried every five seconds. A disconnected C64 cannot receive an on-screen connection warning until its network connection recovers.
 
@@ -97,6 +98,8 @@ To send that static sample to the hardware:
 ```powershell
 dotnet run --project src/WowForever.C64.Console -c Release -- send --snapshot samples/status-effects.json --config c64.local.json
 ```
+
+For a labeled context demo, stop `watch` and use `send --context level --snapshot samples/status-effects.json` with your usual C64 settings. Use `death`, `quest`, or `zone` in place of `level`. Each demo restores the sample dashboard. `preview --context level` renders the same screen locally. For live verification, restart with `watch --diagnostics true`, confirm the stream is v5, and enter a named zone. The companion logs decoded context packets and completed C64 notice writes.
 
 The original communication proof of concept is also available:
 
@@ -119,8 +122,10 @@ Edit [appsettings.json](appsettings.json) in the repository root. A normal build
 | `display.charsetFile` | `null` | Optional 2 KB file using the documented mapping; otherwise generate the included artwork. |
 | `watch.processName` | `Wow` | Foreground process name, without `.exe`. |
 | `watch.pollMilliseconds` | `100` | Capture interval, 50–150 ms, faster than the 200 ms stream frame. |
-| `watch.staleSeconds` | `3` | Missing-heartbeat limit before timers freeze. |
+| `watch.staleSeconds` | `3` | Missing-heartbeat limit before the signal-lost indicator appears. |
 | `watch.pageSeconds` | `8` | Automatic display-page interval. |
+| `watch.contextNotifications` | `true` | Show level-up, death, quest, and zone notices. |
+| `watch.levelUpSeconds`, `watch.questSeconds`, `watch.zoneSeconds` | `8`, `5`, `3` | Notification durations in seconds, 1–30. |
 
 `--host` overrides `C64_HOST`, which overrides JSON. `--config <path>` selects a replacement JSON file; explicit relative paths resolve from the current directory. Copy `c64.example.json` to the ignored `c64.local.json` if you prefer local settings. Unknown JSON properties are rejected.
 
@@ -141,8 +146,8 @@ Diagnostics go to stderr; previews go to stdout. Exit codes: `0` success, `1` tr
 | Symptom | Action |
 | --- | --- |
 | Waiting for pixel packets | Load the updated addon, return WoW to the foreground, keep its bottom-left corner clear, and enable `/c64 bridge on`. |
-| Patch visible but packets rejected | Install addon v0.5.0 or newer and `/reload`, then restart the companion so both use the grayscale protocol and bottom-left location. HDR can stay on. Try `/c64 bridge 3` and windowed/borderless mode. The companion identifies marker, brightness-level, header, and checksum failures; damaged packets are ignored. |
-| Timers freeze when switching apps | Expected: foreground-only capture stops when WoW is no longer foreground. The companion can run in a background terminal. |
+| Patch visible but packets rejected | Reinstall the addon, use `/reload`, and restart the companion. Try `/c64 bridge 3` and windowed/borderless mode. The companion identifies marker, brightness-level, header, and checksum failures. |
+| Timers turn amber when switching apps | Capture resumes when WoW returns to the foreground. The companion can run in a background terminal. |
 | Effects missing immediately after login/change | Allow the chunk burst to finish. Periodic full snapshots repair missed chunks. Check partial/truncated indicators. |
 | C64 connection refused or timeout | Check the configured host, power, local network, and Web Remote Control service. |
 | HTTP 403 | Match `C64_PASSWORD` to the device's Network Password. |
@@ -152,7 +157,7 @@ Diagnostics go to stderr; previews go to stdout. Exit codes: `0` success, `1` tr
 
 ## Source and verification
 
-- [addon/WowForeverC64](addon/WowForeverC64): guarded acquisition, combat freeze, diagnostics, binary pixel encoder.
+- Guarded aura acquisition, context events, diagnostics, and pixel encoding. [Addon source](addon/WowForeverC64)
 - `src/WowForever.C64.Core`: status model, stream decoder/reassembly, screen codes, colored dashboard, independent REST transport.
 - `src/WowForever.C64.Console`: Windows capture, command/configuration handling, live loop and reconnects.
 - [docs/bridge.md](docs/bridge.md): protocol, source research, policy review, and capture limits.

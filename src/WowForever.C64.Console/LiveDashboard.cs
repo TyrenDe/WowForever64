@@ -8,26 +8,36 @@ public sealed class LiveDashboard(IUltimateClient client, IPixelSource source, W
 {
     public async Task RunAsync(CancellationToken cancellationToken)
     {
-        var decoder = new PixelProtocol();
-        var assembler = new SnapshotAssembler();
-        var display = new C64Display(client, vic);
+        var state = new DashboardState(TimeSpan.FromSeconds(options.StaleSeconds), options.ContextNotifications,
+            TimeSpan.FromSeconds(options.LevelUpSeconds), TimeSpan.FromSeconds(options.QuestSeconds),
+            TimeSpan.FromSeconds(options.ZoneSeconds));
         var clock = Stopwatch.StartNew();
-        StatusSnapshot? snapshot = null;
-        BridgeFrame? lastFrame = null;
-        TimeSpan? lastHeartbeat = null;
+        var stateLock = new object();
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var capture = CaptureAsync(state, stateLock, clock, stop.Token);
+        var present = PresentAsync(state, stateLock, clock, stop.Token);
+        await Task.WhenAny(capture, present);
+        await stop.CancelAsync();
+        await Task.WhenAll(capture, present);
+    }
+
+    private async Task CaptureAsync(DashboardState state, object stateLock, Stopwatch clock, CancellationToken cancellationToken)
+    {
+        var decoder = new PixelProtocol();
         TimeSpan? lastCapture = null;
-        var retryAt = TimeSpan.Zero;
-        var verifyAt = TimeSpan.Zero;
-        var online = false;
         string? lastSourceStatus = null;
-        byte[]? lastScreen = null;
-        byte[]? lastColors = null;
-        while (!cancellationToken.IsCancellationRequested)
+        BridgeFrame? previous = null;
+        var contextSeen = false;
+        var reportStart = clock.Elapsed;
+        int frames = 0, contexts = 0, bytes = 0, gaps = 0, duplicates = 0, rejected = 0, unavailable = 0;
+        using var ticker = new PeriodicTimer(TimeSpan.FromMilliseconds(options.PollMilliseconds));
+        do
         {
             var pixels = source.Capture();
             var packet = pixels is null ? null : decoder.Decode(pixels);
+            var now = clock.Elapsed;
             var sourceStatus = packet is not null || pixels is not null && lastCapture is { } recentCapture
-                && clock.Elapsed - recentCapture < TimeSpan.FromSeconds(1)
+                && now - recentCapture < TimeSpan.FromSeconds(1)
                 ? "Receiving status stream" : pixels is null ? source.Status : decoder.Status;
             if (sourceStatus != lastSourceStatus)
             {
@@ -36,28 +46,66 @@ public sealed class LiveDashboard(IUltimateClient client, IPixelSource source, W
             }
             if (packet is not null)
             {
-                lastCapture = clock.Elapsed;
-                if (lastFrame is null || packet.Session != lastFrame.Session || packet.Sequence != lastFrame.Sequence)
+                lastCapture = now;
+                var newSession = previous is null || previous.Session != packet.Session || previous.Version != packet.Version;
+                if (newSession)
                 {
-                    lastHeartbeat = clock.Elapsed;
-                    lastFrame = packet;
-                    var updated = assembler.Accept(packet);
-                    if (updated is not null)
-                    {
-                        if (snapshot is null) log($"STATUS SYNCED: {updated.Auras.Count} effects.");
-                        snapshot = updated;
-                    }
-                    else if (snapshot is not null)
-                        snapshot = snapshot with { Live = false, InCombat = (packet.Flags & 1) != 0, Status = "SYNCING EFFECTS" };
+                    log($"WOW BRIDGE v{packet.Version}. Expected v{PixelProtocol.CurrentVersion}.");
+                    if (packet.Version < PixelProtocol.CurrentVersion)
+                        log("WOW ADDON UPDATE NEEDED: run scripts/Install-Addon.ps1, then type /reload in WoW.");
+                    if (packet.Version >= 4)
+                        log(options.ContextNotifications ? "Context notifications enabled." : "Context notifications disabled in watch settings.");
+                    contextSeen = false;
                 }
+                if (newSession || previous!.Sequence != packet.Sequence)
+                {
+                    if (!newSession)
+                        gaps += unchecked((ushort)(packet.Sequence - previous!.Sequence - 1));
+                    previous = packet;
+                    frames++;
+                    bytes += packet.PayloadLength;
+                    if (packet.Context is not null)
+                    {
+                        contexts++;
+                        if (!contextSeen) log("WOW CONTEXT PACKET RECEIVED.");
+                        contextSeen = true;
+                    }
+                    int? count;
+                    lock (stateLock) count = state.Accept(packet, now);
+                    if (count is { } effects) log($"STATUS SYNCED: {effects} effects.");
+                }
+                else duplicates++;
             }
-            var fresh = lastFrame is not null
-                && lastHeartbeat is { } heartbeat && lastCapture is { } capture
-                && clock.Elapsed - heartbeat <= TimeSpan.FromSeconds(options.StaleSeconds)
-                && clock.Elapsed - capture <= TimeSpan.FromSeconds(options.StaleSeconds);
-            var elapsed = lastHeartbeat is { } receivedAt ? (clock.Elapsed - receivedAt).TotalSeconds : 0;
-            var page = (int)(clock.Elapsed.TotalSeconds / options.PageSeconds);
-            var screen = DashboardRenderer.Render(snapshot, fresh, elapsed, page, lastFrame?.ClockMilliseconds, charset);
+            else if (pixels is null) unavailable++;
+            else rejected++;
+
+            if (options.Diagnostics && now - reportStart >= TimeSpan.FromSeconds(10))
+            {
+                log($"BRIDGE over {(now - reportStart).TotalSeconds:F1}s: {frames} advancing frames, {contexts} context, "
+                    + $"{bytes} payload bytes, {gaps} skipped, {duplicates} repeated, {rejected} rejected, {unavailable} unavailable.");
+                reportStart = now;
+                frames = contexts = bytes = gaps = duplicates = rejected = unavailable = 0;
+            }
+        } while (await ticker.WaitForNextTickAsync(cancellationToken));
+    }
+
+    private async Task PresentAsync(DashboardState state, object stateLock, Stopwatch clock, CancellationToken cancellationToken)
+    {
+        var display = new C64Display(client, vic);
+        var retryAt = TimeSpan.Zero;
+        var verifyAt = TimeSpan.Zero;
+        var online = false;
+        byte[]? lastScreen = null;
+        byte[]? lastColors = null;
+        DashboardNotice? lastNotice = null;
+        using var ticker = new PeriodicTimer(TimeSpan.FromMilliseconds(options.PollMilliseconds));
+        do
+        {
+            var now = clock.Elapsed;
+            DashboardView view;
+            lock (stateLock) view = state.View(now);
+            var page = (int)(now.TotalSeconds / options.PageSeconds);
+            var screen = DashboardRenderer.RenderView(view, page, charset);
             var characters = screen.ToScreenCodes();
             var colors = screen.ToColorRam();
             var verifyDue = clock.Elapsed >= verifyAt;
@@ -89,7 +137,14 @@ public sealed class LiveDashboard(IUltimateClient client, IPixelSource source, W
                     retryAt = clock.Elapsed + TimeSpan.FromSeconds(5);
                 }
             }
-            await Task.Delay(options.PollMilliseconds, cancellationToken);
-        }
+
+            if (online && !ReferenceEquals(lastNotice, view.Notice))
+            {
+                lock (stateLock) state.Presented(view.Notice, clock.Elapsed);
+                if (view.Notice is { } notice) log($"C64 NOTICE SHOWN: {notice.Kind}.");
+                else if (lastNotice is not null) log(view.Auras is not null ? "C64 AURA DASHBOARD RESTORED." : "C64 NOTICE CLEARED.");
+                lastNotice = view.Notice;
+            }
+        } while (await ticker.WaitForNextTickAsync(cancellationToken));
     }
 }

@@ -25,6 +25,9 @@ try
             watch
             preview --snapshot samples/status-effects.json
             send --snapshot samples/status-effects.json
+            preview --context level|death|quest|zone
+            send --context level|death|quest|zone [--snapshot samples/status-effects.json]
+            watch --diagnostics true
             preview --snapshot samples/status-effects.json --output artifacts/fantasy-dashboard.png
             charset --output artifacts/fantasy-charset.bin
             charset --output artifacts/fantasy-atlas.png
@@ -65,7 +68,9 @@ try
     var snapshot = options.SnapshotPath is null ? null
         : StatusSnapshot.Parse(await File.ReadAllTextAsync(options.SnapshotPath, cancellation.Token));
     var screen = options.Command is "preview" or "send"
-        ? snapshot is null ? TestScreenRenderer.Render(options.Message, charset) : DashboardRenderer.Render(snapshot, page: options.Page, charset: charset)
+        ? snapshot is null && options.Context is null ? TestScreenRenderer.Render(options.Message, charset)
+            : DashboardRenderer.Render(snapshot, page: options.Page, charset: charset,
+                diagnostic: options.Context is { } kind ? DashboardState.DiagnosticNotice(kind) : null)
         : null;
     if (options.Command == "preview")
     {
@@ -89,7 +94,7 @@ try
     {
         if (!OperatingSystem.IsWindows())
             throw new PlatformNotSupportedException("Live pixel capture requires Windows. Preview and send work without it.");
-        Log("WATCHING: status effects only. Return to WoW; Ctrl+C stops the companion and leaves the C64 CPU paused.");
+        Log("WATCHING: WoW dashboard. Return to WoW; Ctrl+C stops the companion and leaves the C64 CPU paused.");
         await new LiveDashboard(client, new WindowsPixelSource(options.Watch.ProcessName), options.Watch, options.Vic, charset!, Log).RunAsync(cancellation.Token);
         return 0;
     }
@@ -100,7 +105,24 @@ try
         return 0;
 
     Log($"SENDING: paused character mode, charset ${options.Vic.CharsetAddress:X4}, screen ${options.Vic.ScreenAddress:X4}.");
-    await new C64Display(client, options.Vic).SendAsync(screen!, cancellation.Token);
+    var display = new C64Display(client, options.Vic);
+    await display.SendAsync(screen!, cancellation.Token);
+    if (options.Context is { } demo)
+    {
+        var seconds = demo switch
+        {
+            NoticeKind.LevelUp => options.Watch.LevelUpSeconds,
+            NoticeKind.Quest => options.Watch.QuestSeconds,
+            NoticeKind.Zone => options.Watch.ZoneSeconds,
+            _ => 5
+        };
+        Log($"C64 DEMO SHOWN: {demo} for {seconds} seconds.");
+        try { await Task.Delay(TimeSpan.FromSeconds(seconds), cancellation.Token); }
+        finally
+        {
+            await display.SendAsync(DashboardRenderer.Render(snapshot, page: options.Page, charset: charset), CancellationToken.None);
+        }
+    }
     Log("SENT: charset, VIC setup, and screen acknowledged. CPU remains paused; further sends can update the display.");
     return 0;
 }

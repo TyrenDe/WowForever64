@@ -15,11 +15,12 @@ The installer discovers `_forever_` from Blizzard's registry entry and copies on
 | `/c64` or `/c64 show` | Toggle the status-effects panel. |
 | `/c64 hide` | Hide the panel without stopping acquisition or the stream. |
 | `/c64 refresh` | Refresh outside combat, subject to secrecy guards. |
+| `/c64 status` | Show the loaded addon version, bridge version, cell size, and context packet count. |
 | `/c64 report` | Open a fixed, selectable diagnostic report; Ctrl+C copies it. |
 | `/c64 bridge off` / `on` | Hide/show the stream patch. |
 | `/c64 bridge 2` / `3` | Select two- or three-pixel cells; this size is saved. |
 
-Addon v0.5.0 sends pixel protocol v3, using two calibrated grayscale cells per byte for HDR compatibility. It preserves the v2 snapshot fields, including total duration for the C64 progress bar. The companion also accepts older v1/v2 packets when visible in its capture area. Data/calibration brightness leaves capture headroom, and resolution/UI scale changes are handled automatically. HDR was verified on one setup; other displays and mixed-DPI configurations remain YMMV. See [screen compatibility](../README.md#screens-resolutions-and-scaling) and the [project disclaimer](../README.md#disclaimer).
+Addon v0.6.1 sends pixel protocol v5 with the same grayscale layout and context packets as v4. The new companion accepts older packets and shows an update reminder. [Screen compatibility](../README.md#screens-resolutions-and-scaling)
 
 The default patch is 128×10 physical pixels, eight pixels from the bottom-left edges below chat. Larger cells produce 192×15 pixels with the same capacity. The status panel can be closed while the patch remains visible. Start the companion with `dotnet run --project src/WowForever.C64.Console -c Release -- watch`, then return to WoW. After upgrading from the original top-left color patch, both `/reload` in WoW and restart the companion.
 
@@ -29,7 +30,7 @@ The addon collects helpful and harmful player status effects only. It no longer 
 
 Acquisition uses `C_UnitAuras` and `C_TooltipInfo`, not process memory. Every returned field is checked with `issecretvalue` before comparison, arithmetic, formatting, or persistence. `C_Secrets.ShouldAurasBeSecret()` must return false, and each aura index is gated separately. Missing required guards or API errors stop the scan. No alternate access method is tried to recover secret values.
 
-`PLAYER_REGEN_DISABLED` immediately freezes the snapshot, invalidates live expiration values, and stops acquisition. Combat-time stream packets encode only the existing sanitized snapshot plus combat/heartbeat flags. `PLAYER_REGEN_ENABLED` refreshes acquisition. `UNIT_AURA`'s update payload is never inspected. Events are debounced by 250 ms, with a five-second acquisition refresh for delayed tooltip data; pixel transmission uses a separate 200 ms timer and does not query aura data.
+`PLAYER_REGEN_DISABLED` immediately stops aura acquisition and marks the last snapshot stale. The companion estimates countdowns from that snapshot. `PLAYER_REGEN_ENABLED` refreshes acquisition. `UNIT_AURA`'s update payload is never inspected. Events are debounced by 250 ms, with a five-second acquisition refresh for delayed tooltip data; pixel transmission uses a separate 200 ms timer and does not query aura data.
 
 An in-progress chunk burst finishes before the newest queued snapshot is sent, avoiding starvation if effects change frequently. Combat flags are carried in every frame, so freezing timers does not wait for full snapshot assembly. Periodic retransmissions let the Windows app attach late or recover dropped chunks.
 

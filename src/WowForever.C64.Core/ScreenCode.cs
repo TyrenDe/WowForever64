@@ -26,6 +26,7 @@ public static class ScreenCode
 
     public static char Decode(byte code)
     {
+        if (code == (byte)TileId.DownArrow) return '↓';
         var plain = (byte)(code & 127);
         if (plain == (byte)TileId.UpArrow) return '↑';
         if (plain is >= 32 and <= 95) return (char)plain;

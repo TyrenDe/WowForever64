@@ -1,5 +1,5 @@
 local _, ns = ...
-local Bridge = { enabled = true, sequence = 0, snapshotID = 0, cells = {}, previous = {} }
+local Bridge = { enabled = true, version = 5, sequence = 0, snapshotID = 0, contextPackets = 0, cells = {}, previous = {} }
 ns.Bridge = Bridge
 local WIDTH, HEIGHT, CHUNK_SIZE, MAX_PAYLOAD = 64, 5, 108, 8192
 -- Leave headroom for desktop capture when HDR expands UI brightness.
@@ -52,21 +52,21 @@ local function Description(aura)
 end
 
 local function EncodeEffect(aura)
-    local name = ns.Api.LimitText(aura.name or "UNKNOWN EFFECT", 160)
+    local name = ns.Api.LimitText(aura.name or "", 160)
     local flags = (aura.kind == "HARMFUL" and 1 or 0)
         + (aura.expirationTime == 0 and 2 or 0)
         + (aura.expirationTime and aura.expirationTime > 0 and 4 or 0)
         + (aura.applications and 8 or 0)
         + (aura.duration and 16 or 0)
     local descriptions, truncated = Description(aura)
-    local parts = { UInt(aura.spellId or 0, 4), string.char(flags, #name),
+    local parts = { UInt(aura.spellId or 0, 4), UInt(aura.auraInstanceID or 0, 4), string.char(flags, #name),
         UInt(Milliseconds(aura.expirationTime), 4), UInt(math.min(65535, math.max(0, math.floor(aura.applications or 0))), 2),
         UInt(math.min(4294967295, math.floor(math.max(0, aura.duration or 0) * 1000)), 4),
         string.char(#descriptions), name }
     for _, text in ipairs(descriptions) do
         parts[#parts + 1] = UInt(#text, 2) .. text
     end
-    return table.concat(parts), truncated or #name < #(aura.name or "UNKNOWN EFFECT")
+    return table.concat(parts), truncated or #name < #(aura.name or "")
         or (aura.applications ~= nil and aura.applications > 65535)
 end
 
@@ -124,7 +124,8 @@ local function CreatePatch()
     UpdateScale()
 end
 
-local function SetSnapshot(payload, truncated)
+local function SetSnapshot(payload, partial, truncated)
+    Bridge.partial = partial
     Bridge.truncated = truncated
     Bridge.payload = payload
     Bridge.snapshotID = (Bridge.snapshotID + 1) % 65536
@@ -136,14 +137,48 @@ end
 
 function Bridge.Publish()
     -- Only the sanitized collector model reaches this encoder, including during combat.
-    local payload, truncated = EncodeSnapshot(ns.Collector.snapshot)
-    if payload == Bridge.payload then Bridge.truncated = truncated; Bridge.pending = nil; return end
+    local snapshot = ns.Collector.snapshot
+    local payload, truncated = EncodeSnapshot(snapshot)
+    local partial = snapshot.auraStatus ~= "ok"
+    if payload == Bridge.payload and partial == Bridge.partial and truncated == Bridge.truncated then
+        Bridge.pending = nil
+        return
+    end
     if Bridge.burstRemaining and Bridge.burstRemaining > 0 then
         -- Finish the current snapshot, then send the newest queued state.
-        Bridge.pending = { payload, truncated }
+        Bridge.pending = { payload, partial, truncated }
     else
-        SetSnapshot(payload, truncated)
+        Bridge.pending = nil
+        SetSnapshot(payload, partial, truncated)
     end
+end
+
+local function EncodeContext(now)
+    local context = ns.Context
+    local flags = context.dead == nil and 0 or (context.dead and 2 or 1)
+    local parts = {}
+    local level, quest, zone = context.level, context.quest, context.zone
+    if level and now - level.at < 30 then
+        flags = flags + 4
+        parts[#parts + 1] = UInt(Milliseconds(level.at), 4) .. UInt(level.value, 2)
+    end
+    for _, entry in ipairs({ { quest, 8, 54 }, { zone, 16, 36 } }) do
+        local event = entry[1]
+        if event and now - event.at < 30 then
+            local name = ns.Api.LimitText(event.value, entry[3])
+            flags = flags + entry[2]
+            parts[#parts + 1] = UInt(Milliseconds(event.at), 4) .. string.char(#name) .. name
+        end
+    end
+    return string.char(flags) .. table.concat(parts)
+end
+
+function Bridge.ResetSession()
+    if Bridge.session then Bridge.session = (Bridge.session + 1) % 4294967296 end
+    Bridge.payload, Bridge.pending = nil, nil
+    Bridge.burstRemaining, Bridge.sequence, Bridge.snapshotID = 0, 0, 0
+    Bridge.contextPayload, Bridge.contextResyncAt = nil, nil
+    Bridge.sentContext = false
 end
 
 function Bridge.Tick()
@@ -157,32 +192,41 @@ function Bridge.Tick()
     Bridge.session = Bridge.session or (Milliseconds(now) + math.random(1, 1000000)) % 4294967296
     Bridge.sequence = (Bridge.sequence + 1) % 65536
     if Bridge.burstRemaining == 0 and Bridge.pending then
-        SetSnapshot(Bridge.pending[1], Bridge.pending[2])
+        SetSnapshot(unpack(Bridge.pending))
         Bridge.pending = nil
     end
     if Bridge.burstRemaining == 0 and now >= (Bridge.resyncAt or 0) then
         Bridge.nextChunk, Bridge.burstRemaining = 0, Bridge.chunkCount
     end
-    local index, chunk = 65535, ""
-    if Bridge.burstRemaining > 0 then
+    local context = EncodeContext(now)
+    local index, chunk, kind = 65535, "", 0
+    -- Context has its own frame so it can get through during multi-chunk aura bursts.
+    local contextDue = context ~= Bridge.contextPayload or now >= (Bridge.contextResyncAt or 0)
+    if contextDue and (not Bridge.sentContext or Bridge.burstRemaining == 0) then
+        Bridge.contextPayload, Bridge.contextResyncAt = context, now + 1
+        Bridge.contextPackets = Bridge.contextPackets + 1
+        chunk, kind = context, 1
+    elseif Bridge.burstRemaining > 0 then
         index = Bridge.nextChunk
         chunk = Bridge.payload:sub(index * CHUNK_SIZE + 1, (index + 1) * CHUNK_SIZE)
         Bridge.nextChunk = Bridge.nextChunk + 1
         Bridge.burstRemaining = Bridge.burstRemaining - 1
         if Bridge.burstRemaining == 0 then Bridge.resyncAt = now + 3 end
     end
+    Bridge.sentContext = kind == 1
     local snapshot = ns.Collector.snapshot
-    local live = snapshot.expirationAuthoritative and snapshot.auraCapturedAt
+    local available = ns.Collector.worldReady and snapshot.expirationAuthoritative and snapshot.auraCapturedAt
         and now - snapshot.auraCapturedAt <= 15
     local flags = (snapshot.inCombat == true and 1 or 0)
-        + (live and 2 or 0)
-        + (snapshot.auraStatus ~= "ok" and 4 or 0)
+        + (available and not Bridge.pending and 2 or 0)
+        + (Bridge.partial and 4 or 0)
         + (Bridge.truncated and 8 or 0)
         + (ns.Collector.worldReady and 16 or 0)
-    local prefix = "C64W" .. string.char(3, flags) .. UInt(Bridge.sequence, 2)
+        + (available and 32 or 0)
+    local prefix = "C64W" .. string.char(Bridge.version, flags) .. UInt(Bridge.sequence, 2)
         .. UInt(Bridge.session, 4) .. UInt(Bridge.snapshotID, 2) .. UInt(index, 2)
         .. UInt(Bridge.chunkCount, 2) .. UInt(#Bridge.payload, 2) .. UInt(#chunk, 2) .. UInt(Bridge.checksum, 4)
-    local suffix = UInt(Milliseconds(now), 4) .. string.char(0, 0)
+    local suffix = UInt(Milliseconds(now), 4) .. string.char(kind, 0)
     local packet = prefix .. UInt(Adler32(prefix .. suffix .. chunk), 4) .. suffix .. chunk
     for byteIndex = 1, #packet do
         local value = packet:byte(byteIndex)

@@ -8,6 +8,11 @@ local Collector = {
 }
 ns.Collector = Collector
 
+function Collector.Reset()
+    Collector.snapshot = { schemaVersion = 1, status = "WAITING FOR WORLD", auras = {}, expirationAuthoritative = false }
+    Collector.combatEvent = false
+end
+
 function Collector.Publish()
     -- Only our sanitized tables are persisted. SavedVariables are not a live file bridge.
     if type(WowForeverC64DB) ~= "table" then WowForeverC64DB = {} end

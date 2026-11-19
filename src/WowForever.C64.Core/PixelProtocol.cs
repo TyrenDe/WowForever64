@@ -7,12 +7,28 @@ public sealed record PixelFrame(int Width, int Height, byte[] Bgra);
 
 public sealed record BridgeFrame(byte Flags, ushort Sequence, uint Session, ushort SnapshotId,
     ushort ChunkIndex, ushort ChunkCount, ushort TotalLength, uint SnapshotChecksum,
-    uint ClockMilliseconds, byte[] Chunk, byte Version = 1);
+    uint ClockMilliseconds, byte[] Chunk, byte Version = 1)
+{
+    public BridgeContext? Context { get; init; }
+    public int PayloadLength { get; init; } = Chunk.Length;
+    public bool InCombat => (Flags & 1) != 0;
+    public bool WorldReady => (Flags & 16) != 0;
+    public bool AuraSnapshotCurrent => (Flags & 2) != 0 && WorldReady && !InCombat;
+    public bool AuraDataAvailable => Version >= 4 ? (Flags & 32) != 0 : AuraSnapshotCurrent;
+    public bool Partial => (Flags & 4) != 0;
+    public bool Truncated => (Flags & 8) != 0;
+}
+
+public sealed record BridgeNotice<T>(uint ClockMilliseconds, T Value);
+
+public sealed record BridgeContext(bool? Dead, BridgeNotice<ushort>? LevelUp,
+    BridgeNotice<string>? Quest, BridgeNotice<string>? Zone);
 
 public sealed class PixelProtocol
 {
     public const int Columns = 64;
     public const int Rows = 5;
+    public const byte CurrentVersion = 5;
     public const int ChunkSize = 252;
     public const int GrayscaleChunkSize = 108;
     private static readonly (bool R, bool G, bool B)[] Markers =
@@ -104,8 +120,9 @@ public sealed class PixelProtocol
                 Array.Resize(ref data, 36 + chunkLength);
             }
         }
-        if (!data.AsSpan(0, 4).SequenceEqual("C64W"u8) || (grayscale ? data[4] != 3 : data[4] is not (1 or 2)) || data[5] > 31
-            || data[34] != 0 || data[35] != 0)
+        var version = data[4];
+        var contextPacket = version >= 4 && data[34] == 1;
+        if (!data.AsSpan(0, 4).SequenceEqual("C64W"u8) || (grayscale ? version < 3 : version is not (1 or 2)))
             return Reject(2, "Pixel bridge header is unreadable; reload the latest addon and keep the patch clear");
         var expectedChecksum = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(26));
         var checksumBytes = new byte[data.Length - 4];
@@ -114,19 +131,60 @@ public sealed class PixelProtocol
         if (Adler32(checksumBytes) != expectedChecksum)
             return Reject(3, grayscale ? "Pixel bridge checksum mismatch; keep the patch clear or try /c64 bridge 3"
                 : "Legacy color bridge checksum mismatch; update the addon for HDR-compatible grayscale packets");
+        if (version > CurrentVersion)
+            return Reject(4, $"WoW bridge v{version} requires a newer C64 companion. This build supports up to v{CurrentVersion}.");
+        if (data[5] > (version >= 4 ? 63 : 31) || (!contextPacket && data[34] != 0) || data[35] != 0)
+            return Reject(4, "Pixel bridge header is invalid; reload the latest addon and keep the patch clear");
         var total = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(18));
         var count = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(16));
         var index = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(14));
         if (total is < 1 or > 8192 || count != (total + chunkSize - 1) / chunkSize
-            || index != ushort.MaxValue && (index >= count || data.Length - 36 != Math.Min(chunkSize, total - index * chunkSize))
-            || index == ushort.MaxValue && data.Length != 36)
+            || index != ushort.MaxValue && (contextPacket || index >= count || data.Length - 36 != Math.Min(chunkSize, total - index * chunkSize))
+            || index == ushort.MaxValue && !contextPacket && data.Length != 36)
             return Reject(4, "Pixel bridge packet dimensions are invalid; reload the addon");
+        var chunk = data[36..];
+        BridgeContext? context = null;
+        if (contextPacket)
+        {
+            try { context = ReadContext(chunk); }
+            catch (Exception ex) when (ex is InvalidDataException or EndOfStreamException or DecoderFallbackException)
+            {
+                return Reject(4, "Pixel bridge context packet is invalid; reload the addon");
+            }
+        }
         Status = "Receiving status stream";
         return new BridgeFrame(data[5], BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(6)),
             BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(8)),
             BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(12)), index, count, total,
             BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(22)),
-            BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(30)), data[36..], data[4]);
+            BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(30)), contextPacket ? [] : chunk, version)
+        {
+            Context = context, PayloadLength = chunk.Length
+        };
+    }
+
+    private static BridgeContext ReadContext(byte[] data)
+    {
+        using var reader = new BinaryReader(new MemoryStream(data), new UTF8Encoding(false, true));
+        var flags = reader.ReadByte();
+        if (flags > 31 || (flags & 3) == 3) throw new InvalidDataException("Invalid context flags.");
+        bool? dead = (flags & 3) switch { 1 => false, 2 => true, _ => null };
+        var level = (flags & 4) != 0 ? new BridgeNotice<ushort>(reader.ReadUInt32(), reader.ReadUInt16()) : null;
+        var quest = (flags & 8) != 0 ? ReadName(54) : null;
+        var zone = (flags & 16) != 0 ? ReadName(36) : null;
+        if (reader.BaseStream.Position != reader.BaseStream.Length || level?.Value == 0)
+            throw new InvalidDataException("Invalid context payload.");
+        return new BridgeContext(dead, level, quest, zone);
+
+        BridgeNotice<string> ReadName(int maxBytes)
+        {
+            var at = reader.ReadUInt32();
+            var length = reader.ReadByte();
+            if (length == 0 || length > maxBytes) throw new InvalidDataException("Invalid context name length.");
+            var bytes = reader.ReadBytes(length);
+            if (bytes.Length != length) throw new EndOfStreamException();
+            return new BridgeNotice<string>(at, new UTF8Encoding(false, true).GetString(bytes));
+        }
     }
 
     private BridgeFrame? Reject(int stage, string message)
@@ -213,12 +271,10 @@ public sealed class SnapshotAssembler
             }
         }
         if (complete is null) return null;
-        var fighting = (frame.Flags & 1) != 0;
-        var live = (frame.Flags & 2) != 0 && (frame.Flags & 16) != 0 && !fighting;
         return complete with
         {
-            InCombat = fighting, Live = live, Partial = (frame.Flags & 4) != 0, Truncated = (frame.Flags & 8) != 0,
-            Status = fighting ? "PAUSED - IN COMBAT" : live ? "LIVE" : "PAUSED - DATA UNAVAILABLE"
+            InCombat = frame.InCombat, Live = frame.AuraSnapshotCurrent, Partial = frame.Partial, Truncated = frame.Truncated,
+            Status = frame.InCombat ? "PAUSED - IN COMBAT" : frame.AuraSnapshotCurrent ? "LIVE" : "PAUSED - DATA UNAVAILABLE"
         };
     }
 
@@ -250,6 +306,7 @@ public sealed class SnapshotAssembler
         for (var i = 0; i < count; i++)
         {
             var spellId = ReadUInt(4);
+            var instanceId = version >= 4 ? ReadUInt(4) : 0;
             var flags = ReadByte();
             var nameLength = ReadByte();
             var expiry = ReadUInt(4);
@@ -266,6 +323,7 @@ public sealed class SnapshotAssembler
                 descriptions.Add(ReadText(length));
             }
             effects.Add(new StatusEffect { Name = name, SpellId = spellId == 0 ? null : spellId,
+                AuraInstanceId = instanceId == 0 ? null : instanceId,
                 Harmful = (flags & 1) != 0, Permanent = (flags & 2) != 0,
                 Applications = (flags & 8) != 0 ? applications : null,
                 Duration = version >= 2 && (flags & 16) != 0 ? duration / 1000d : null,

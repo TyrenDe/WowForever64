@@ -7,6 +7,8 @@ public sealed record StatusEffect
 {
     public string Name { get; init; } = "UNKNOWN EFFECT";
     public uint? SpellId { get; init; }
+    [JsonIgnore]
+    public uint? AuraInstanceId { get; init; }
     public bool Harmful { get; init; }
     public bool Permanent { get; init; }
     public uint? Applications { get; init; }

@@ -68,7 +68,8 @@ end
 function View.ReportText()
     local snapshot = ns.Collector.snapshot
     local lines = {
-        "WoW Forever C64 diagnostic report v0.5.0",
+        "WoW Forever C64 diagnostic report v" .. ns.version,
+        "Bridge protocol: " .. ns.Bridge.version .. ", context packets: " .. ns.Bridge.contextPackets,
         "Client: " .. Text(ns.clientVersion) .. " build " .. Text(ns.clientBuild) .. " interface " .. Text(ns.clientInterface),
         "Status: " .. snapshot.status,
         "In combat: " .. Text(snapshot.inCombat),

@@ -128,6 +128,7 @@ public static class FantasyCharset
         // The upper half contains inverse versions of every text/tile glyph.
         for (var code = 0; code < 128; code++)
             for (var row = 0; row < 8; row++) bytes[(code + 128) * 8 + row] = (byte)~bytes[code * 8 + row];
+        Glyph((byte)TileId.DownArrow, 0, 0x18, 0x18, 0x18, 0x7E, 0x3C, 0x18, 0);
         return CharacterSet.FromBytes(bytes);
     }
 }
